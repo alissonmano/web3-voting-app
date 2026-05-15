@@ -2,7 +2,6 @@ import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { useReadContract, useWriteContract, useAccount } from 'wagmi'
 import { CONTRACT_ADDRESS, VOTING_ABI } from './contractInfo'
 
-// Tipo para mapear o retorno da struct Candidate do Solidity
 interface Candidate {
   id: bigint
   name: string
@@ -13,15 +12,31 @@ export default function App() {
   const { isConnected, address } = useAccount()
   const { writeContract, isPending } = useWriteContract()
 
-  // 1. Busca automática dos candidatos da rede Sepolia (Atualiza sem gastar Gas)
-  const { data: candidates, refetch } = useReadContract({
+  // 1. Automatically fetch the candidates list from Sepolia Testnet
+  const { data: candidates, refetch: refetchCandidates } = useReadContract({
     address: CONTRACT_ADDRESS,
     abi: VOTING_ABI,
     functionName: 'getCandidates',
   })
 
-  // 2. Dispara a transação de escrita (Abre o pop-up da MetaMask para pagar Gas de teste)
+  // 2. Read the smart contract state to check if the current connected wallet has already voted
+  const { data: hasUserVoted, refetch: refetchVoteStatus } = useReadContract({
+    address: CONTRACT_ADDRESS,
+    abi: VOTING_ABI,
+    functionName: 'hasVoted',
+    args: address ? [address] : undefined,
+    query: {
+      enabled: !!address, // Only runs the query if a wallet address is active
+    }
+  })
+
+  // 3. Handles the voting transaction workflow and triggers MetaMask signing
   const handleVote = (candidateId: number) => {
+    if (hasUserVoted) {
+      alert("Security Enforcement: Your wallet address has already registered a vote.")
+      return
+    }
+
     writeContract({
       address: CONTRACT_ADDRESS,
       abi: VOTING_ABI,
@@ -29,11 +44,15 @@ export default function App() {
       args: [BigInt(candidateId)],
     }, {
       onSuccess: () => {
-        alert("Transação enviada! Aguarde alguns segundos para a rede processar.")
-        setTimeout(() => refetch(), 5000) // Atualiza o placar na tela
+        alert("Transaction broadcasted successfully! Awaiting block confirmation...")
+        // Triggers a reactive synchronization delay to let the blockchain mine the block
+        setTimeout(() => {
+          refetchCandidates()
+          refetchVoteStatus()
+        }, 6000)
       },
       onError: (err) => {
-        alert(`Erro na transação: ${err.message}`)
+        alert(`Transaction Rejected: ${err.message}`)
       }
     })
   }
@@ -47,25 +66,41 @@ export default function App() {
 
       {!isConnected ? (
         <div style={{ textAlign: 'center', marginTop: '3rem', color: '#666' }}>
-          <p>Conecte sua carteira para ver as opções e votar.</p>
+          <p>Please authenticate your Web3 wallet to review ballot candidates and cast your vote.</p>
         </div>
       ) : (
         <div>
-          <p>Logado como: <code style={{ background: '#eee', padding: '0.2rem 0.4rem' }}>{address}</code></p>
+          <p style={{ marginBottom: '1.5rem' }}>
+            Connected Account: <code style={{ background: '#eee', padding: '0.2rem 0.4rem', borderRadius: '4px' }}>{address}</code>
+          </p>
+
+          {hasUserVoted && (
+            <div style={{ background: '#fff3cd', color: '#856404', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid #ffeeba' }}>
+              <strong>Notice:</strong> Your cryptographic signature has already been registered on-chain for this poll. Double-voting is strictly protected.
+            </div>
+          )}
           
-          <div style={{ display: 'grid', gap: '1rem', marginTop: '2rem' }}>
+          <div style={{ display: 'grid', gap: '1rem' }}>
             {candidates?.map((candidate: Candidate) => (
               <div key={candidate.id.toString()} style={{ border: '1px solid #ccc', padding: '1rem', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                   <h3 style={{ margin: 0 }}>{candidate.name}</h3>
-                  <small style={{ color: '#555' }}>Votos: {candidate.voteCount.toString()}</small>
+                  <small style={{ color: '#555' }}>Total Votes: {candidate.voteCount.toString()}</small>
                 </div>
                 <button 
                   onClick={() => handleVote(Number(candidate.id))}
-                  disabled={isPending}
-                  style={{ padding: '0.5rem 1rem', cursor: 'pointer', background: '#0070f3', color: 'white', border: 'none', borderRadius: '4px' }}
+                  disabled={isPending || hasUserVoted}
+                  style={{ 
+                    padding: '0.5rem 1rem', 
+                    cursor: isPending || hasUserVoted ? 'not-allowed' : 'pointer', 
+                    background: hasUserVoted ? '#6c757d' : '#0070f3', 
+                    color: 'white', 
+                    border: 'none', 
+                    borderRadius: '4px',
+                    transition: 'background 0.2s ease'
+                  }}
                 >
-                  {isPending ? 'Enviando...' : 'Votar'}
+                  {hasUserVoted ? 'Already Voted' : isPending ? 'Processing...' : 'Cast Vote'}
                 </button>
               </div>
             ))}
